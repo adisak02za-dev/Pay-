@@ -9,6 +9,7 @@ import { HistoryView } from './components/HistoryView';
 import { CompareView } from './components/CompareView';
 import { SettingsModal } from './components/SettingsModal';
 import { AuthModal } from './components/AuthModal';
+import { supabase } from './lib/supabase';
 import {
   DayItem,
   ExtraIncomeItem,
@@ -45,7 +46,6 @@ export default function App() {
   const settings = currentUserData.settings;
   const records = currentUserData.records;
 
-  // Selected period controls
   const now = new Date();
   const defaultYear = now.getFullYear();
   const defaultMonth = now.getMonth() + 1;
@@ -61,8 +61,6 @@ export default function App() {
   const [days, setDays] = useState<DayItem[]>(() => generateInitialDays(currentPeriod));
   const [extras, setExtras] = useState<ExtraIncomeItem[]>([]);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
-
-  // Active Tab
   const [currentTab, setCurrentTab] = useState<'calc' | 'hist' | 'comp' | 'set'>('calc');
   const [isAuthOpen, setIsAuthOpen] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -72,7 +70,6 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 3000);
   }, []);
 
-  // Update theme class on HTML element
   useEffect(() => {
     if (isDark) {
       document.documentElement.classList.add('dark');
@@ -86,7 +83,23 @@ export default function App() {
     saveDatabase(currentDb);
   }, [isDark]);
 
-  // Listen to external db change events
+  // โหลดจาก Supabase ตอนเปิดเว็บ
+  useEffect(() => {
+    const loadFromSupabase = async () => {
+      const { data } = await supabase.from('payslips').select('*').order('created_at', { ascending: false });
+      if (data && data.length > 0) {
+        const dbNow = loadDatabase();
+        const uid = dbNow.currentUserId || 'guest';
+        const supaRecords = data.map((d: any) => d.slip_data as PayRecord).filter(Boolean);
+        const merged = [...supaRecords, ...dbNow.users[uid].records].filter((v,i,a)=>a.findIndex(x=>x.key===v.key)===i);
+        dbNow.users[uid].records = merged;
+        saveDatabase(dbNow);
+        setDb({ ...dbNow });
+      }
+    };
+    loadFromSupabase();
+  }, []);
+
   useEffect(() => {
     const handleDbChange = (e: Event) => {
       const customEvent = e as CustomEvent;
@@ -98,17 +111,14 @@ export default function App() {
     return () => window.removeEventListener('pst_db_changed', handleDbChange);
   }, []);
 
-  // Real-time calculated record: updates whenever days, extras, or settings change!
   const currentCalculation = useMemo<PayRecord>(() => {
     return calculatePayroll(currentPeriod, days, settings, extras, imagePreview);
   }, [currentPeriod, days, settings, extras, imagePreview]);
 
-  // Check if current calculation is already saved
   const isSaved = useMemo(() => {
     return records.some((r) => r.key === currentCalculation.key && r.net === currentCalculation.net);
   }, [records, currentCalculation]);
 
-  // Handle generation of new days
   const handleGenerateDays = () => {
     const [y, m] = selectedMonth.split('-').map(Number);
     const pInfo = generatePeriodInfo(y, m, selectedHalf);
@@ -119,7 +129,6 @@ export default function App() {
     showToast(`🗓️ สร้างตารางงวด ${pInfo.label} แล้ว`);
   };
 
-  // Day table updates
   const handleUpdateDay = (index: number, updates: Partial<DayItem>) => {
     setDays((prev) => {
       const next = [...prev];
@@ -128,76 +137,55 @@ export default function App() {
     });
   };
 
-  // Day presets
   const handleQuickPreset = (preset: 'all_work' | 'tue_holiday' | 'sun_holiday' | 'sat_sun_holiday') => {
     setDays((prev) =>
       prev.map((d) => {
-        if (preset === 'all_work') {
-          return { ...d, type: 'work' };
-        }
-        if (preset === 'tue_holiday' && d.dow === 2) {
-          // Tuesday weekly holiday (unpaid 0 baht)
-          return { ...d, type: 'holiday', unpaidHours: 0 };
-        }
-        if (preset === 'sun_holiday' && d.dow === 0) {
-          // Sunday weekly holiday (unpaid 0 baht)
-          return { ...d, type: 'holiday', unpaidHours: 0 };
-        }
-        if (preset === 'sat_sun_holiday' && (d.dow === 0 || d.dow === 6)) {
-          // Saturday and Sunday weekly holiday (unpaid 0 baht)
-          return { ...d, type: 'holiday', unpaidHours: 0 };
-        }
+        if (preset === 'all_work') return { ...d, type: 'work' };
+        if (preset === 'tue_holiday' && d.dow === 2) return { ...d, type: 'holiday', unpaidHours: 0 };
+        if (preset === 'sun_holiday' && d.dow === 0) return { ...d, type: 'holiday', unpaidHours: 0 };
+        if (preset === 'sat_sun_holiday' && (d.dow === 0 || d.dow === 6)) return { ...d, type: 'holiday', unpaidHours: 0 };
         return d;
       })
     );
     showToast('⚡ ปรับแต่งตารางวันเรียบร้อย');
   };
 
-  // Extra income handlers
   const handleAddExtra = () => {
-    setExtras((prev) => [
-      ...prev,
-      { id: Math.random().toString(36).substring(2, 9), name: '', amt: 0 },
-    ]);
+    setExtras((prev) => [...prev, { id: Math.random().toString(36).substring(2, 9), name: '', amt: 0 }]);
   };
 
   const handleQuickAddExtra = () => {
     if (settings.qAmt <= 0) return;
-    setExtras((prev) => [
-      ...prev,
-      {
-        id: Math.random().toString(36).substring(2, 9),
-        name: settings.qName || 'Incentive',
-        amt: settings.qAmt,
-      },
-    ]);
+    setExtras((prev) => [...prev, { id: Math.random().toString(36).substring(2, 9), name: settings.qName || 'Incentive', amt: settings.qAmt }]);
     showToast(`⚡ เพิ่ม ${settings.qName} +${settings.qAmt} ฿ เรียบร้อย`);
   };
 
   const handleUpdateExtra = (id: string, updates: Partial<ExtraIncomeItem>) => {
-    setExtras((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, ...updates } : item))
-    );
+    setExtras((prev) => prev.map((item) => (item.id === id ? { ...item, ...updates } : item)));
   };
 
   const handleRemoveExtra = (id: string) => {
     setExtras((prev) => prev.filter((item) => item.id !== id));
   };
 
-  // Save current record to history
-  const handleSaveCurrentRecord = () => {
+  const handleSaveCurrentRecord = async () => {
     savePayRecord(currentCalculation);
     const updatedDb = loadDatabase();
     setDb(updatedDb);
     showToast(`💾 บันทึกงวด ${currentCalculation.period.label} เรียบร้อยแล้ว`);
+    try {
+      await supabase.from('payslips').upsert({
+        key: currentCalculation.key,
+        net_pay: currentCalculation.net,
+        period_label: currentCalculation.period.label,
+        slip_data: currentCalculation,
+      }, { onConflict: 'key' });
+    } catch (e) { console.error(e); }
   };
 
-  // Open past record from history
   const handleOpenRecord = (record: PayRecord) => {
     setCurrentPeriod(record.period);
-    setSelectedMonth(
-      `${record.period.y}-${String(record.period.m).padStart(2, '0')}`
-    );
+    setSelectedMonth(`${record.period.y}-${String(record.period.m).padStart(2, '0')}`);
     setSelectedHalf(record.period.half);
     setDays(record.days);
     setExtras(record.extras || []);
@@ -207,16 +195,15 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  // Delete record
-  const handleDeleteRecord = (id: string) => {
+  const handleDeleteRecord = async (id: string) => {
     deletePayRecord(id);
     const updatedDb = loadDatabase();
     setDb(updatedDb);
     showToast('🗑️ ลบประวัติเรียบร้อย');
+    try { await supabase.from('payslips').delete().eq('key', id); } catch {}
   };
 
-  // Clear all records
-  const handleClearAllRecords = () => {
+  const handleClearAllRecords = async () => {
     const updatedDb = loadDatabase();
     const uid = updatedDb.currentUserId || 'guest';
     if (updatedDb.users[uid]) {
@@ -225,9 +212,9 @@ export default function App() {
       setDb(updatedDb);
     }
     showToast('🗑️ ล้างประวัติทั้งหมดแล้ว');
+    try { await supabase.from('payslips').delete().neq('key', '___never___'); } catch {}
   };
 
-  // Save Settings
   const handleSaveSettings = (newSettings: UserSettings) => {
     updateUserSettings(newSettings);
     const updatedDb = loadDatabase();
@@ -235,14 +222,12 @@ export default function App() {
     showToast('✅ บันทึกการตั้งค่าแล้ว');
   };
 
-  // Refresh data trigger
   const handleRefreshData = () => {
     const updatedDb = loadDatabase();
     setDb(updatedDb);
     showToast('🔄 อัปเดตข้อมูลเรียบร้อยแล้ว');
   };
 
-  // Auth Login
   const handleUserLogin = (profile: UserProfile) => {
     setCurrentUser(profile);
     const updatedDb = loadDatabase();
@@ -251,11 +236,7 @@ export default function App() {
   };
 
   const handleUserLogout = () => {
-    const guestProfile: UserProfile = {
-      id: 'guest',
-      name: 'ผู้ใช้ทั่วไป (Guest)',
-      provider: 'guest',
-    };
+    const guestProfile: UserProfile = { id: 'guest', name: 'ผู้ใช้ทั่วไป (Guest)', provider: 'guest' };
     setCurrentUser(guestProfile);
     const updatedDb = loadDatabase();
     setDb(updatedDb);
@@ -264,136 +245,28 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex flex-col transition-colors duration-200">
-      {/* Toast popup */}
       {toastMessage && (
         <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-slate-100 text-xs font-semibold shadow-2xl shadow-black animate-slideUp">
           {toastMessage}
         </div>
       )}
-
-      {/* Header */}
-      <Header
-        currentTab={currentTab}
-        onSelectTab={setCurrentTab}
-        isDark={isDark}
-        onToggleTheme={() => setIsDark((prev) => !prev)}
-        user={user}
-        onOpenAuth={() => setIsAuthOpen(true)}
-        onLogout={handleUserLogout}
-      />
-
-      {/* Main Content Area */}
+      <Header currentTab={currentTab} onSelectTab={setCurrentTab} isDark={isDark} onToggleTheme={() => setIsDark((prev) => !prev)} user={user} onOpenAuth={() => setIsAuthOpen(true)} onLogout={handleUserLogout} />
       <main className="flex-1 max-w-6xl w-full mx-auto p-4 space-y-6">
-        {/* Tab 1: Calculate Pay Slip */}
         {currentTab === 'calc' && (
           <div className="space-y-6 animate-fadeIn">
-            <PeriodForm
-              selectedMonth={selectedMonth}
-              selectedHalf={selectedHalf}
-              onChangeMonth={setSelectedMonth}
-              onChangeHalf={setSelectedHalf}
-              onGenerateDays={handleGenerateDays}
-              imagePreview={imagePreview}
-              onSetImage={setImagePreview}
-              isDark={isDark}
-              currentPeriod={currentPeriod}
-            />
-
-            <DayTable
-              days={days}
-              settings={settings}
-              onUpdateDay={handleUpdateDay}
-              onQuickPreset={handleQuickPreset}
-              isDark={isDark}
-            />
-
-            <ExtraIncomeForm
-              extras={extras}
-              settings={settings}
-              onAddExtra={handleAddExtra}
-              onQuickAdd={handleQuickAddExtra}
-              onUpdateExtra={handleUpdateExtra}
-              onRemoveExtra={handleRemoveExtra}
-              onCalculate={() => {
-                showToast('⚡ คำนวณยอดเงินและอัปเดตกราฟแบบ Real-time เรียบร้อย');
-                const el = document.getElementById('calculation-summary-card');
-                el?.scrollIntoView({ behavior: 'smooth' });
-              }}
-              isDark={isDark}
-            />
-
-            {/* Real-time Summary Charts using Chart.js */}
-            <RealTimeCharts
-              currentRecord={currentCalculation}
-              historyRecords={records}
-              isDark={isDark}
-            />
-
-            {/* Calculation KPI & Breakdown */}
-            <CalculationSummary
-              record={currentCalculation}
-              onSaveRecord={handleSaveCurrentRecord}
-              isDark={isDark}
-              isSaved={isSaved}
-            />
+            <PeriodForm selectedMonth={selectedMonth} selectedHalf={selectedHalf} onChangeMonth={setSelectedMonth} onChangeHalf={setSelectedHalf} onGenerateDays={handleGenerateDays} imagePreview={imagePreview} onSetImage={setImagePreview} isDark={isDark} currentPeriod={currentPeriod} />
+            <DayTable days={days} settings={settings} onUpdateDay={handleUpdateDay} onQuickPreset={handleQuickPreset} isDark={isDark} />
+            <ExtraIncomeForm extras={extras} settings={settings} onAddExtra={handleAddExtra} onQuickAdd={handleQuickAddExtra} onUpdateExtra={handleUpdateExtra} onRemoveExtra={handleRemoveExtra} onCalculate={() => { showToast('⚡ คำนวณยอดเงินและอัปเดตกราฟแบบ Real-time เรียบร้อย'); const el = document.getElementById('calculation-summary-card'); el?.scrollIntoView({ behavior: 'smooth' }); }} isDark={isDark} />
+            <RealTimeCharts currentRecord={currentCalculation} historyRecords={records} isDark={isDark} />
+            <CalculationSummary record={currentCalculation} onSaveRecord={handleSaveCurrentRecord} isDark={isDark} isSaved={isSaved} />
           </div>
         )}
-
-        {/* Tab 2: Monthly History */}
-        {currentTab === 'hist' && (
-          <div className="animate-fadeIn">
-            <HistoryView
-              records={records}
-              onOpenRecord={handleOpenRecord}
-              onDeleteRecord={handleDeleteRecord}
-              onGoToCalc={() => setCurrentTab('calc')}
-              isDark={isDark}
-            />
-          </div>
-        )}
-
-        {/* Tab 3: Compare Periods */}
-        {currentTab === 'comp' && (
-          <div className="animate-fadeIn">
-            <CompareView
-              records={records}
-              isDark={isDark}
-              onGoToCalc={() => setCurrentTab('calc')}
-            />
-          </div>
-        )}
-
-        {/* Tab 4: Settings */}
-        {currentTab === 'set' && (
-          <div className="animate-fadeIn">
-            <SettingsModal
-              settings={settings}
-              onSaveSettings={handleSaveSettings}
-              onClearRecords={handleClearAllRecords}
-              isDark={isDark}
-              onRefreshData={handleRefreshData}
-            />
-          </div>
-        )}
+        {currentTab === 'hist' && (<div className="animate-fadeIn"><HistoryView records={records} onOpenRecord={handleOpenRecord} onDeleteRecord={handleDeleteRecord} onGoToCalc={() => setCurrentTab('calc')} isDark={isDark} /></div>)}
+        {currentTab === 'comp' && (<div className="animate-fadeIn"><CompareView records={records} isDark={isDark} onGoToCalc={() => setCurrentTab('calc')} /></div>)}
+        {currentTab === 'set' && (<div className="animate-fadeIn"><SettingsModal settings={settings} onSaveSettings={handleSaveSettings} onClearRecords={handleClearAllRecords} isDark={isDark} onRefreshData={handleRefreshData} /></div>)}
       </main>
-
-      {/* Footer */}
-      <footer
-        className={`border-t py-4 text-center text-xs text-slate-500 mt-10 transition-colors ${
-          isDark ? 'border-slate-800 bg-slate-900/40' : 'border-slate-200 bg-white'
-        }`}
-      >
-        PaySlip Tracker © {new Date().getFullYear()} · ระบบคำนวณค่าแรงรายวัน กราฟสรุป Real-time และ Dark Mode
-      </footer>
-
-      {/* Auth Modal */}
-      <AuthModal
-        isOpen={isAuthOpen}
-        onClose={() => setIsAuthOpen(false)}
-        currentUser={user}
-        onLogin={handleUserLogin}
-        isDark={isDark}
-      />
+      <footer className={`border-t py-4 text-center text-xs text-slate-500 mt-10 transition-colors ${isDark ? 'border-slate-800 bg-slate-900/40' : 'border-slate-200 bg-white'}`}>PaySlip Tracker © {new Date().getFullYear()} · ระบบคำนวณค่าแรงรายวัน กราฟสรุป Real-time และ Dark Mode</footer>
+      <AuthModal isOpen={isAuthOpen} onClose={() => setIsAuthOpen(false)} currentUser={user} onLogin={handleUserLogin} isDark={isDark} />
     </div>
   );
 }
